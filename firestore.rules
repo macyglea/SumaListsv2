@@ -1,0 +1,118 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function authed() {
+      return request.auth != null;
+    }
+
+    function isMember(hid) {
+      return authed() &&
+        (request.auth.uid in get(/databases/$(database)/documents/households/$(hid)).data.members);
+    }
+
+    // ==========================
+    // USERS COLLECTION
+    // ==========================
+    match /users/{uid} {
+      // Any signed-in user can read names/emails for household membership display
+      allow read: if authed();
+
+      // Only the user themselves can create/update/delete their profile doc
+      allow create, update, delete: if authed() && request.auth.uid == uid;
+    }
+
+    // ==========================
+    // HOUSEHOLDS ROOT
+    // ==========================
+    match /households/{hid} {
+
+      // Read: any signed-in user can load the household doc
+      allow read: if authed();
+
+      // Create: creator sets themselves as only initial member
+      allow create: if authed()
+        && request.resource.data.members == [request.auth.uid]
+        && request.resource.data.name is string
+        && request.resource.data.inviteCode is string;
+
+      // Update household:
+      //   Members can always update
+      //   Non-members can ONLY self-join with matching invite code
+      allow update: if authed() && (
+        // Member updates allowed
+        (request.auth.uid in resource.data.members)
+        ||
+        // Self-join rule: must append their UID + match name + match inviteCode
+        (
+          !(request.auth.uid in resource.data.members)
+          && request.resource.data.inviteCode == resource.data.inviteCode
+          && request.resource.data.name == resource.data.name
+          && request.resource.data.members == resource.data.members.concat([request.auth.uid])
+        )
+      );
+
+      // ==========================
+      // LISTS UNDER HOUSEHOLD
+      // ==========================
+      match /lists/{listId} {
+
+        // Only household members may read
+        allow read: if isMember(hid);
+
+        // Create: must include storeName
+        allow create: if isMember(hid)
+          && request.resource.data.storeName is string;
+
+        // Update/Delete: member only
+        allow update, delete: if isMember(hid);
+
+        // ==========================
+        // ITEMS UNDER LIST
+        // ==========================
+        match /items/{itemId} {
+
+          allow read: if isMember(hid);
+
+          allow create: if isMember(hid)
+            && request.resource.data.name is string
+            && request.resource.data.checked is bool
+            && request.resource.data.addedBy == request.auth.uid;
+
+          allow update, delete: if isMember(hid);
+        }
+
+        // ==========================
+        // STAPLES UNDER LIST
+        // ==========================
+        match /staples/{stapleId} {
+
+          allow read: if isMember(hid);
+
+          allow create: if isMember(hid)
+            && request.resource.data.name is string
+            && (!('defaultQty' in request.resource.data)
+                || request.resource.data.defaultQty is int
+                || request.resource.data.defaultQty is float)
+            && request.resource.data.createdBy == request.auth.uid;
+
+          allow update, delete: if isMember(hid);
+        }
+
+        // ==========================
+        // ONE-OFFS UNDER LIST
+        // ==========================
+        match /oneOffs/{oneOffId} {
+
+          allow read: if isMember(hid);
+
+          allow create: if isMember(hid)
+            && request.resource.data.name is string
+            && request.resource.data.createdBy == request.auth.uid;
+
+          allow update, delete: if isMember(hid);
+        }
+      }
+    }
+  }
+}
